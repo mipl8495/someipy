@@ -143,21 +143,7 @@ class ClientServiceInstance(ServiceDiscoveryObserver):
                 break
         return has_service
 
-    async def call_method(self, method_id: int, payload: bytes) -> MethodResult:
-        """
-        Calls a method on the service instance represented by the ClientServiceInstance.
-
-        Args:
-            method_id (int): The ID of the method to call.
-            payload (bytes): The payload to send with the method call.
-
-        Returns:
-            MethodResult: The result of the method call which can contain an error or a successful result including the response payload.
-
-        Raises:
-            RuntimeError: If the TCP connection to the server cannot be established or if the server service has not been found yet.
-            asyncio.TimeoutError: If the method call times out, i.e. the server does not send back a response within one second.
-        """
+    async def __call_method_int(self, method_id: int, payload: bytes, message_type: MessageType, session_id: int):
 
         get_logger(_logger_name).debug(f"Try to call method 0x{method_id:04X}")
 
@@ -169,10 +155,6 @@ class ClientServiceInstance(ServiceDiscoveryObserver):
                 f"Method 0x{method_id:04x} called, but service 0x{self._service.id:04X} with instance 0x{self._instance_id:04X} not found yet."
             )
 
-        # Session ID is a 16-bit value and should be incremented for each method call starting from 1
-        self._session_id = (self._session_id + 1) % 0xFFFF
-        session_id = self._session_id
-
         header = SomeIpHeader(
             service_id=self._service.id,
             method_id=method_id,
@@ -180,14 +162,11 @@ class ClientServiceInstance(ServiceDiscoveryObserver):
             session_id=session_id,
             protocol_version=0x01,
             interface_version=self._service.major_version,
-            message_type=MessageType.REQUEST.value,
+            message_type=message_type.value,
             return_code=0x00,
             length=len(payload) + 8,
         )
         someip_message = SomeIpMessage(header, payload)
-
-        call_future = asyncio.get_running_loop().create_future()
-        self._method_call_futures[session_id] = call_future
 
         # At this point the service should be found since an exception would have been raised before
         for s in self._offered_services:
@@ -248,6 +227,31 @@ class ClientServiceInstance(ServiceDiscoveryObserver):
                 (dst_address, dst_port),
             )
 
+    async def call_method(self, method_id: int, payload: bytes) -> MethodResult:
+        """
+        Calls a method on the service instance represented by the ClientServiceInstance.
+
+        Args:
+            method_id (int): The ID of the method to call.
+            payload (bytes): The payload to send with the method call.
+
+        Returns:
+            MethodResult: The result of the method call which can contain an error or a successful result including the response payload.
+
+        Raises:
+            RuntimeError: If the TCP connection to the server cannot be established or if the server service has not been found yet.
+            asyncio.TimeoutError: If the method call times out, i.e. the server does not send back a response within one second.
+        """
+
+        # Session ID is a 16-bit value and should be incremented for each method call starting from 1
+        self._session_id = (self._session_id + 1) % 0xFFFF
+        session_id = self._session_id
+
+        call_future = asyncio.get_running_loop().create_future()
+        self._method_call_futures[session_id] = call_future
+
+        await self.__call_method_int(method_id, payload, MessageType.REQUEST, session_id)
+
         # After sending the method call wait for maximum 10 seconds
         try:
             await asyncio.wait_for(call_future, 10.0)
@@ -264,6 +268,14 @@ class ClientServiceInstance(ServiceDiscoveryObserver):
         method_result = call_future.result()
         del self._method_call_futures[session_id]
         return method_result
+
+    async def call_method_no_response(self, method_id: int, payload: bytes):
+
+        # Session ID is a 16-bit value and should be incremented for each method call starting from 1
+        self._session_id = (self._session_id + 1) % 0xFFFF
+        session_id = self._session_id
+
+        await self.__call_method_int(method_id, payload, MessageType.REQUEST_NO_RETURN, session_id)
 
     def someip_message_received(
         self, someip_message: SomeIpMessage, addr: Tuple[str, int]
