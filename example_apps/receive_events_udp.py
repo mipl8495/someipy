@@ -7,16 +7,36 @@ from someipy import ServiceBuilder, EventGroup, TransportLayerProtocol, SomeIpMe
 from someipy.service_discovery import construct_service_discovery
 from someipy.client_service_instance import construct_client_service_instance
 from someipy.logging import set_someipy_log_level
-from temperature_msg import TemparatureMsg
 
-SD_MULTICAST_GROUP = "224.224.224.245"
+from dataclasses import dataclass
+from someipy.serialization import (
+    SomeIpPayload,
+    Uint8,
+)
+
+SD_MULTICAST_GROUP = "235.2.3.5"
 SD_PORT = 30490
-DEFAULT_INTERFACE_IP = "127.0.0.1"  # Default IP if not provided
+DEFAULT_INTERFACE_IP = "192.168.88.77"  # Default IP if not provided
 
-SAMPLE_SERVICE_ID = 0x1234
-SAMPLE_INSTANCE_ID = 0x5678
-SAMPLE_EVENTGROUP_ID = 0x0321
-SAMPLE_EVENT_ID = 0x0123
+SAMPLE_SERVICE_ID = 0x0101
+SAMPLE_INSTANCE_ID = 0x0001
+SAMPLE_EVENTGROUP_ID = 0x0000
+SAMPLE_EVENT_ID = 0x0001
+SAMPLE_METHOD_ID = 0x0002
+SAMPLE_EVENT_ID_2 = 0x0003
+
+@dataclass
+class CounterMsg(SomeIpPayload):
+    # Always define payloads with the @dataclass decorator. This leads to the __eq__ being
+    # generated which makes it easy to compare the content of two messages.
+    # For defining a payload struct simply derive from the SomeIpPayload class. This will ensure
+    # the Python object can be serialized and deserialized and supports e.g. len() calls which
+    # will return the length of the payload in bytes
+
+    counter: Uint8
+
+    def __init__(self, counter: int = 0):
+        self.counter = Uint8(counter)
 
 
 def temperature_callback(someip_message: SomeIpMessage) -> None:
@@ -31,10 +51,11 @@ def temperature_callback(someip_message: SomeIpMessage) -> None:
     """
     try:
         print(
-            f"Received {len(someip_message.payload)} bytes for event {someip_message.header.method_id}. Try to deserialize.."
+            f"Received {len(someip_message.payload)} bytes for event {someip_message.header.method_id} and service id {someip_message.header.service_id}. Try to deserialize.."
         )
-        temperature_msg = TemparatureMsg().deserialize(someip_message.payload)
-        print(temperature_msg)
+        counter_msg = CounterMsg().deserialize(someip_message.payload)
+        print(counter_msg)
+
     except Exception as e:
         print(f"Error in deserialization: {e}")
 
@@ -65,7 +86,7 @@ async def main():
     # 3. The ServiceDiscoveryProtocol object has to be passed as well, so the ClientServiceInstance can offer his service to
     # other ECUs
     temperature_eventgroup = EventGroup(
-        id=SAMPLE_EVENTGROUP_ID, event_ids=[SAMPLE_EVENT_ID]
+        id=SAMPLE_EVENTGROUP_ID, event_ids=[SAMPLE_EVENT_ID, SAMPLE_EVENT_ID_2]
     )
     temperature_service = (
         ServiceBuilder()
@@ -77,7 +98,7 @@ async def main():
     service_instance_temperature = await construct_client_service_instance(
         service=temperature_service,
         instance_id=SAMPLE_INSTANCE_ID,
-        endpoint=(ipaddress.IPv4Address(interface_ip), 3002),
+        endpoint=(ipaddress.IPv4Address(interface_ip), 60000),
         ttl=5,
         sd_sender=service_discovery,
         protocol=TransportLayerProtocol.UDP,
@@ -97,8 +118,25 @@ async def main():
     service_discovery.attach(service_instance_temperature)
 
     try:
-        # Keep the task alive
-        await asyncio.Future()
+
+        while not service_instance_temperature.service_found():
+            print("Waiting for service..")
+            await asyncio.sleep(0.5)
+
+        while True:
+
+            try:
+                counter_msg = CounterMsg(counter=5)
+
+                await service_instance_temperature.call_method_no_response(
+                            SAMPLE_METHOD_ID, counter_msg.serialize()
+                        )
+            
+            except Exception as e:
+                print(f"Error during method call: {e}")
+
+            await asyncio.sleep(10)
+
     except asyncio.CancelledError as e:
         print("Shutdown..")
     finally:
